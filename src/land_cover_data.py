@@ -1,5 +1,4 @@
 import cartopy
-import cartopy.crs as ccrs
 import geopandas
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -9,12 +8,6 @@ import xarray as xr
 from matplotlib.colors import from_levels_and_colors
 from numpy import copy
 from shapely.geometry import mapping
-
-
-class HigherResPlateCarree(ccrs.PlateCarree):
-    @property
-    def threshold(self):
-        return super().threshold / 100
 
 
 def get_land_cover_colormap_for_data(data):

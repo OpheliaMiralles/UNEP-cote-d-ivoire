@@ -41,12 +41,6 @@ def get_monthly_river_discharge_from_ADHI(path_to_files, stations_path):
 def plot_ADHI_stations(stations_path, figname=''):
     stations = pd.read_csv(stations_path)
     stations = stations[stations['Country'] == "Cote d'Ivoire"]
-
-    class HigherResPlateCarree(ccrs.PlateCarree):
-        @property
-        def threshold(self):
-            return super().threshold / 100
-
     proj = HigherResPlateCarree()
     subplot_kw = {'projection': proj}
     fig, ax = plt.subplots(ncols=1, figsize=(5, 5), subplot_kw=subplot_kw)

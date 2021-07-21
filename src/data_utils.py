@@ -7,7 +7,7 @@ class HigherResPlateCarree(ccrs.PlateCarree):
         return super().threshold / 100
 
 
-def get_boundaries(country):
+def get_boundaries(country=None):
     if country == "COTE D'IVOIRE":
         return (-8.58, 4.36, -2.492, 10.75)
     elif country == "BURKINA FASO":
