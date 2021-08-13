@@ -1,4 +1,5 @@
 import cartopy
+import cartopy.crs as ccrs
 import geopandas
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -8,6 +9,8 @@ import xarray as xr
 from matplotlib.colors import from_levels_and_colors
 from numpy import copy
 from shapely.geometry import mapping
+
+from data_utils import HigherResPlateCarree, get_boundaries
 
 
 def get_land_cover_colormap_for_data(data):
@@ -63,7 +66,6 @@ def plot_land_cover(dataset, bounds_longitude, bounds_latitude, time):
     data = ds[:]
     default_level_nonforest = 10
     forest_nonforest_data = get_forest_nonforest_dict_for_data(data, default_level_nonforest)
-
     cmap, norm = get_land_cover_colormap_for_data(data)
     subplot_kw = {'projection': HigherResPlateCarree()}
     fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(25, 12.5), subplot_kw=subplot_kw)
@@ -120,7 +122,13 @@ def get_new_lccs_classes():
     return inverted
 
 
-def merge_land_cover_regions_and_compute_summary_stats(data: xr.Dataset, boundaries_file: str):
+def compute_landuse_region(data: xr.Dataset, boundaries_file: str):
+    """
+
+    :param data: land cover data from LCCS (.nc file read with xarray)
+    :param boundaries_file: the path to region boundaries
+    :return: table with land use proportion per region per year between 0 and 1
+    """
     gj = geopandas.read_file(boundaries_file)
     dic_landuse_classes = get_new_lccs_classes()
     regional = []
@@ -142,12 +150,12 @@ def merge_land_cover_regions_and_compute_summary_stats(data: xr.Dataset, boundar
             regional.append(pd.DataFrame([[time, region, perc_forest, perc_missing, biggest_landuse]],
                                          columns=["time", "region", "forest_proportion", "missing_data_prop",
                                                   "main_land_use"]).set_index(["time", "region"]))
-        cid = pd.concat(regional).sort_index()
-        return cid
+    cid = pd.concat(regional).sort_index()
+    return cid
 
 
 def compute_deforestation_per_region(data: xr.Dataset, boundaries_file: str):
-    landcover = merge_land_cover_regions_and_compute_summary_stats(data, boundaries_file)
+    landcover = compute_landuse_region(data, boundaries_file)
     defo = []
     for r, df in landcover.groupby(level="region", as_index=False):
         deforestation = df["forest_proportion"].diff().cumsum().rename("forest_gain").to_frame().assign(region=r)
@@ -156,12 +164,153 @@ def compute_deforestation_per_region(data: xr.Dataset, boundaries_file: str):
     return defo
 
 
+def compute_landuse_villages(data: xr.Dataset, boundaries_file: str):
+    gj = geopandas.read_file(boundaries_file)
+    dic_landuse_classes = get_new_lccs_classes()
+    columns_dataframe = [k for k in np.unique(list(dic_landuse_classes.values()))]
+    regional = []
+    for village in gj.Name:
+        boun = gj[gj["Name"] == village]
+        xds = data.drop_vars(["crs", "lat_bounds", "lon_bounds", "time_bounds"])
+        xds = xds[['lccs_class']].transpose('time', 'lat', 'lon')
+        xds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+        xds.rio.write_crs(data.crs, inplace=True)
+        clipped = xds.rio.clip(boun.geometry.apply(mapping))
+        dataframe = clipped.to_dataframe()
+        dataframe = dataframe.drop(columns=["spatial_ref"]).assign(land_use=lambda x: x["lccs_class"])
+        dataframe["land_use"] = dataframe["land_use"].apply(lambda x: dic_landuse_classes[x])
+        for time, df in dataframe.groupby(level="time", as_index=True):
+            regional_data = df.groupby('land_use').agg({"land_use": lambda x: x.count() / len(df)})
+            perc_cover = []
+            for col in list(columns_dataframe):
+                if col in regional_data.index:
+                    perc = regional_data.loc[col, "land_use"]
+                else:
+                    perc = 0.0
+                perc_cover.append(perc)
+            biggest_landuse = regional_data.idxmax().values[0]
+            regional.append(pd.DataFrame([[time, village] + perc_cover + [biggest_landuse]],
+                                         columns=["time", "village"] + list(columns_dataframe) + [
+                                             "main_land_use"]).set_index(["village", "time"]))
+    cid = pd.concat(regional).sort_index()
+    return cid
+
+
+def compute_landuse_area(data: xr.Dataset, boundaries_file: str):
+    gj = geopandas.read_file(boundaries_file)
+    dic_landuse_classes = get_new_lccs_classes()
+    columns_dataframe = [k for k in np.unique(list(dic_landuse_classes.values()))]
+    regional = []
+    xds = data.drop_vars(["crs", "lat_bounds", "lon_bounds", "time_bounds"])
+    xds = xds[['lccs_class']].transpose('time', 'lat', 'lon')
+    xds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+    xds.rio.write_crs(data.crs, inplace=True)
+    clipped = xds.rio.clip(gj.geometry.apply(mapping), "epsg:3857")
+    dataframe = clipped.to_dataframe()
+    dataframe = dataframe.drop(columns=["spatial_ref"]).assign(land_use=lambda x: x["lccs_class"])
+    dataframe["land_use"] = dataframe["land_use"].apply(lambda x: dic_landuse_classes[x])
+    for time, df in dataframe.groupby(level="time", as_index=True):
+        regional_data = df.groupby('land_use').agg({"land_use": lambda x: x.count() / len(df)})
+        perc_cover = []
+        for col in list(columns_dataframe):
+            if col in regional_data.index:
+                perc = regional_data.loc[col, "land_use"]
+            else:
+                perc = 0.0
+            perc_cover.append(perc)
+        biggest_landuse = regional_data.idxmax().values[0]
+        regional.append(pd.DataFrame([[time] + perc_cover + [biggest_landuse]],
+                                     columns=["time"] + list(columns_dataframe) + [
+                                         "main_land_use"]).set_index(["time"]))
+    cid = pd.concat(regional).sort_index()
+    return cid
+
+
+def compute_landuse_change_area(data: xr.Dataset, boundaries_file: str):
+    landuse_area = compute_landuse_area(data, boundaries_file)
+    cumdiff_pct = 100 * landuse_area.drop(columns=["main_land_use"]).diff().cumsum().fillna(0.)
+    return cumdiff_pct
+
+
+def barplot_graph_landuse_area(data: pd.DataFrame):
+    degList = [i for i in data.columns]
+    bar_l = range(data.shape[0])
+    cm = plt.get_cmap('tab20b')
+    from cycler import cycler
+    f, ax = plt.subplots(1, figsize=(12, 7))
+    ax.set_prop_cycle(cycler('color', [cm(1. * i / len(degList)) for i in range(len(degList))]))
+    bottom = np.zeros_like(bar_l).astype('float')
+    for i, deg in enumerate(degList):
+        ax.bar(bar_l, data[deg], bottom=bottom, label=deg.replace("_", " ").capitalize())
+        bottom += data[deg].values
+
+    ax.set_xticks(bar_l)
+    ax.set_xticklabels([pd.to_datetime(i).strftime("%Y") for i in data.index], rotation=90,
+                       size='x-small')
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.3), ncol=4, fontsize='x-small')
+    f.tight_layout()
+    return f
+
+
+def landuse_area_plot_with_village_names(data: xr.Dataset, boundaries_file: str, villages_pos_file: str):
+    """
+
+    :param data: land cover data from LCCS
+    :param boundaries_file: path to area boundaries
+    :param villages_pos_file: geographical position of villages of interest
+    :return: matplotlib figure, do "f.show()" to see the figure or "f.savefig(path)" to save it somewhere
+    """
+    b0, b2, b1, b3 = get_boundaries()  # chosen after iterations of plotting the zone
+    villages = geopandas.read_file(villages_pos_file)
+    gj = geopandas.read_file(boundaries_file)
+    subplot_kw = {'projection': HigherResPlateCarree()}
+    fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(12.5, 5), subplot_kw=subplot_kw)
+    for y, ax in zip(['2000', '2020'], [ax1, ax2]):
+        clip = data.sel(time=y).sel(lon=slice(b0, b1), lat=slice(b3, b2)).lccs_class[:]
+        longitudes = clip.lon[:]
+        latitudes = clip.lat[:]
+        dic = get_new_lccs_classes()
+        colors = pd.DataFrame.from_dict(dic, orient="index").reset_index().rename(
+            columns={0: "land_use", "index": "val"}).groupby("land_use").agg("min")
+        dicc = colors.to_dict()["val"]
+        finaldic = {k: dicc[v] for k, v in dic.items()}
+        colored_ds = xr.Dataset.from_dataframe(clip.to_dataframe()["lccs_class"].map(finaldic).to_frame())
+        cmap, norm = get_land_cover_colormap_for_data(colored_ds.lccs_class[:])
+        colored_array = np.array(colored_ds.lccs_class[:]).reshape(len(latitudes), len(longitudes))
+        ax.set_extent([b0, b1, b2, b3])
+        ax.add_geometries(gj.geometry, crs=ccrs.epsg(3857), alpha=0.1, facecolor="b", edgecolor='navy')
+        # Land cover plot
+        c_scheme = ax.pcolormesh(longitudes, latitudes, colored_array, cmap=cmap, norm=norm,
+                                 transform=HigherResPlateCarree())
+        cb = plt.colorbar(c_scheme, location='bottom', pad=0.05,
+                          label="LCCS classification of land cover", ax=ax)
+        cb.ax.tick_params(labelsize=8, labelrotation=45)
+        t = cb.get_ticks()
+        middle_points = (t[:-1] + t[1:]) / 2
+        cb.set_ticks(middle_points)
+        levels = [{v: k for k, v in dicc.items()}[t].replace("_", " ").capitalize() for t in t]
+        cb.set_ticks(middle_points)
+        cb.set_ticklabels(levels)
+        ax.add_feature(cartopy.feature.BORDERS.with_scale('10m'), color='black')
+        ax.add_feature(cartopy.feature.LAND.with_scale('10m'), color='burlywood')
+        blue = (0, 0.27450980392, 0.78431372549)
+        ax.add_feature(cartopy.feature.OCEAN.with_scale('10m'), color=blue)
+        ax.set_title(f'{y}')
+        for name in villages.Name:
+            centroid = villages[villages.Name == name].geometry.centroid
+            middle_lon, middle_lat = float(centroid.x), float(centroid.y)
+            ax.text(middle_lon - 0.5, middle_lat, name, transform=HigherResPlateCarree(),
+                    color='darkred', fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
 if __name__ == '__main__':
     # Example of use
     path_to_landuse_datadir = ''
-    path_to_adminregions_boundaries_geojson = ''
-    plot_path = ''
+    path_to_boundaries_shapefile = ''
     data = xr.open_mfdataset(f"{path_to_landuse_datadir}/*nc")
-    defo = compute_deforestation_per_region(data, path_to_adminregions_boundaries_geojson)  # aggregates data per region
-    last_defo = (100 * defo.loc["2020-01-01", slice(None)][
-        "forest_gain"]).reset_index()  # gets the total deforestation that happened between the y1 of land use data and last year
+    landuse_prop = compute_landuse_area(data, path_to_boundaries_shapefile)
+    cumdiff_pct = compute_landuse_change_area(data, path_to_boundaries_shapefile)
+    f = barplot_graph_landuse_area(landuse_prop)
+    f.show()

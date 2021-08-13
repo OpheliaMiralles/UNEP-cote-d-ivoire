@@ -3,7 +3,6 @@ from glob import glob
 from io import StringIO
 
 import cartopy
-import cartopy.crs as ccrs
 import geopandas
 import matplotlib
 import matplotlib.pyplot as plt

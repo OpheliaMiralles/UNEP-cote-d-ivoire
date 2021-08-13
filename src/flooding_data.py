@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import wget
 
-from src.data_utils import HigherResPlateCarree, get_boundaries
+from data_utils import HigherResPlateCarree, get_boundaries
 
 
 # MODIS
